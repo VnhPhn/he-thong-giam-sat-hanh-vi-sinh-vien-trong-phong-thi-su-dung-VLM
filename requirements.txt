@@ -1,0 +1,40 @@
+# ========================================
+# 🧠 HỆ THỐNG GIÁM SÁT HÀNH VI SINH VIÊN TRONG PHÒNG THI (YOLOv8 + BLIP-2)
+# ========================================
+
+# --- CORE MACHINE LEARNING ---
+torch>=2.1.0
+torchvision>=0.16.0
+torchaudio>=2.1.0
+transformers>=4.44.0
+accelerate>=0.33.0
+sentencepiece
+timm
+huggingface-hub
+
+# --- OBJECT DETECTION (YOLOv8) ---
+ultralytics>=8.2.0
+opencv-python
+numpy
+Pillow
+
+# --- INTERFACE / VISUALIZATION ---
+gradio>=4.0.0
+matplotlib
+seaborn
+
+# --- WEB BACKEND (Flask API) ---
+Flask
+Flask-Cors
+
+# --- DATA PROCESSING & UTILITIES ---
+pandas
+scikit-learn
+openpyxl
+python-docx
+requests
+psutil
+datetime
+
+# --- WINDOWS ALERT SOUND (Optional) ---
+winsound; sys_platform == "win32"
