@@ -112,4 +112,17 @@ pip install -r requirements.txt
 # 3️⃣ Chạy demo
 python Last.py
 ```
+## 🔍 KẾT QUẢ HIỂN THỊ
+
+- 🧾 **Khung người bị phát hiện (YOLOv8)**  
+- 💬 **Xác suất gian lận (%)**  
+- 📸 **Ảnh bằng chứng lưu tại:** `/logs/evidence/`  
+- 🔔 **Âm thanh cảnh báo:** khi xác suất > ngưỡng  
+- 🧠 **Mô tả hành vi từ BLIP-2:**  
+
+**Ví dụ:**
+> “Student using phone”  
+> “Looking at another screen”  
+> “Cheating detected”
+
 
