@@ -92,7 +92,7 @@ Hệ thống được xây dựng nhằm:
 ## 🧩 KIẾN TRÚC HỆ THỐNG
 
 ```text
-
+![Sơ đồ kiến trúc]()
 ```
 
 ---
@@ -124,5 +124,6 @@ python Last.py
 > “Student using phone”  
 > “Looking at another screen”  
 > “Cheating detected”
+
 
 
