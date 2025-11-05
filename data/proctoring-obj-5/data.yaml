@@ -1,0 +1,16 @@
+
+names:
+- cheating
+- non-cheating
+nc: 2
+roboflow:
+  license: CC BY 4.0
+  project: proctoring-obj
+  url: https://universe.roboflow.com/proctoring-pjt1g/proctoring-obj/dataset/5
+  version: 5
+  workspace: proctoring-pjt1g
+train: D:\\DaihocDaiNam\\Nam4\\Ki1\\Chuyen_doi_so\\Baitaplon\\exam_monitoring_vlm\\data\\proctoring-obj-5\\train\\images
+val: D:\\DaihocDaiNam\\Nam4\\Ki1\\Chuyen_doi_so\\Baitaplon\\exam_monitoring_vlm\\data\\proctoring-obj-5\\valid\\images
+test: D:\\DaihocDaiNam\\Nam4\\Ki1\\Chuyen_doi_so\\Baitaplon\\exam_monitoring_vlm\\data\\proctoring-obj-5\\test\\images
+
+

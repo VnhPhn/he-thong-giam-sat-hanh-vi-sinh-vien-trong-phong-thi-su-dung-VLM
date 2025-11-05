@@ -1,0 +1,6 @@
+[2025-11-05 12:31:05.592503] data/test/istockphoto-175598666-612x612.jpg -> Describe briefly the situation | IMG: logs/evidence\cheating_20251105-123105.jpg
+[2025-11-05 12:33:58.714330] data/test/hq720.jpg -> 40% | reason=BLIP text suspicious | img=logs/evidence\cheating_20251105-123358.jpg
+    BLIP: i think there is cheating in this image
+[2025-11-05 12:36:59.222904] data/test/istockphoto-175598666-612x612.jpg -> 0% | No cheating detected. | IMG: logs/evidence\cheating_20251105-123659.jpg
+[2025-11-05 12:38:36.973772] data/test/istockphoto-175598666-612x612.jpg -> 0% | No cheating detected. | IMG: logs/evidence\cheating_20251105-123836.jpg
+[2025-11-05 12:39:39.698420] data/test/hq720.jpg -> 0% | No cheating detected. | IMG: logs/evidence\cheating_20251105-123939.jpg
