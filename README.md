@@ -5,7 +5,7 @@
 </h2>
 
 <h2 align="center">
-   XÂY DỰNG HỆ THỐNG PHÂN TÍCH GIÁM SÁT HÀNH VI CỦA SINH VIÊN TRONG PHÒNG THI <br>
+   XÂY DỰNG HỆ THỐNG PHÂN TÍCH GIÁM SÁT HÀNH VI CỦA SINH VIÊN<br> TRONG PHÒNG THI 
    DỰA TRÊN MÔ HÌNH NGÔN NGỮ THỊ GIÁC (VLM)
 </h2>
 
@@ -158,6 +158,7 @@ python Last.py
 <h4>
 🎓 Ngành Công nghệ Thông tin – Trường Đại học Đại Nam  
 <br>
+
 
 
 
