@@ -1,175 +1,311 @@
-# ========================================
-# 📘 predict_image_cheat_only.py — Chỉ đóng khung người gian lận + xác suất %
-# ========================================
+import os
+import time
+import gc
+import threading
+from datetime import datetime
 
-import os, gc, torch, cv2, math
+import cv2
+import torch
 import numpy as np
 from PIL import Image
-from datetime import datetime
 from ultralytics import YOLO
 from transformers import Blip2Processor, Blip2ForConditionalGeneration
+import gradio as gr
+
+# ====== Âm thanh cảnh báo (Windows) ======
+try:
+    import winsound
+    def beep():
+        winsound.Beep(2000, 700)
+except Exception:
+    def beep():
+        pass
 
 # ========================
 # ⚙️ CẤU HÌNH
 # ========================
-IMG_PATH = "data/test/hq720.jpg"   # 👉 Ảnh cần dự đoán
-YOLO_WEIGHTS = r"runs/detect/train_rtx3050/weights/best.pt"
-CONF_DET = 0.2
+CAM_URL = "http://192.168.1.13:4747/video"
+
+MODEL_PERSON = "yolov8n.pt"  # YOLO COCO: có class "person"
+MODEL_CHEAT = r"runs/detect/train_rtx3050/weights/best.pt"  # mô hình 2 lớp cheating / non-cheating của bạn
+
+CONF_PERSON = 0.35   # ngưỡng phát hiện người
+CONF_CHEAT = 0.15    # ngưỡng cheat / non-cheat
 
 EVIDENCE_DIR = "logs/evidence"
-LOG_FILE = os.path.join("logs", "evidence_log.txt")
+LOG_FILE = "logs/evidence_log.txt"
 os.makedirs(EVIDENCE_DIR, exist_ok=True)
 os.makedirs("logs", exist_ok=True)
 
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-DTYPE = torch.float16 if DEVICE == "cuda" else torch.float32
-print(f"🧠 Thiết bị: {DEVICE}, dtype: {DTYPE}")
+DEVICE_GPU = "cuda" if torch.cuda.is_available() else "cpu"
+print(f"🧠 Thiết bị GPU chính: {DEVICE_GPU}")
+
+ANALYZE_EVERY = 2        # chỉ chạy YOLO mỗi 2 frame (giữ FPS)
+BLIP_AUTO_COOLDOWN = 6.0 # giây, auto mô tả sau mỗi lần cheat
 
 # ========================
 # 🔹 TẢI MÔ HÌNH
 # ========================
-print("🔹 Đang tải YOLO...")
-yolo = YOLO(YOLO_WEIGHTS).to(DEVICE)
-print("✅ YOLO sẵn sàng.")
+print("🔹 Tải YOLO-person (COCO, GPU)…")
+yolo_person = YOLO(MODEL_PERSON)
+yolo_person.to(DEVICE_GPU)
 
-print("🔹 Đang tải BLIP-2 Flan-T5-XL...")
+print("🔹 Tải YOLO-cheat (2 lớp, CPU)…")
+yolo_cheat = YOLO(MODEL_CHEAT)
+yolo_cheat.to("cpu")
+
+print("🔹 Tải BLIP-2 Flan-T5-XL (CPU)…")
 blip_proc = Blip2Processor.from_pretrained("Salesforce/blip2-flan-t5-xl")
 blip_model = Blip2ForConditionalGeneration.from_pretrained(
     "Salesforce/blip2-flan-t5-xl",
-    torch_dtype=DTYPE
-).to(DEVICE)
-blip_model.eval()
-print("✅ BLIP-2 sẵn sàng.\n")
+    torch_dtype=torch.float32
+).to("cpu").eval()
+print("✅ Models ready.")
 
 # ========================
-# 🔤 TỪ KHÓA NGHI NGỜ
+# 🔤 BLIP-2 util
 # ========================
-SUS_KEYWORDS = [
-    "cheating", "copying", "using a phone", "phone",
-    "mobile", "device", "texting", "peeking", "passing paper"
-]
+BLIP_MAX_NEW_TOKENS = 32
 
-# ========================
-# 🧩 HÀM TIỆN ÍCH
-# ========================
-def run_blip(img_pil, question):
-    """Sinh câu trả lời từ BLIP-2"""
-    inputs = blip_proc(images=img_pil, text=question, return_tensors="pt").to(DEVICE)
-    with torch.inference_mode(), torch.cuda.amp.autocast(enabled=(DEVICE=="cuda")):
-        out = blip_model.generate(**inputs, max_new_tokens=32)
+def run_blip_sync(pil_img: Image.Image, question: str) -> str:
+    """Gọi BLIP-2 đồng bộ (dùng cho chat)."""
+    inputs = blip_proc(images=pil_img, text=question, return_tensors="pt").to("cpu")
+    with torch.inference_mode():
+        out = blip_model.generate(**inputs, max_new_tokens=BLIP_MAX_NEW_TOKENS)
     ans = blip_proc.tokenizer.decode(out[0], skip_special_tokens=True)
     del inputs, out
-    if DEVICE == "cuda": torch.cuda.empty_cache()
     gc.collect()
     return ans.strip()
 
-def looks_suspicious(text: str) -> bool:
-    low = text.lower()
-    return any(k in low for k in SUS_KEYWORDS)
-
-def expand_box(x1, y1, x2, y2, scale, w, h):
-    cx, cy = (x1+x2)/2, (y1+y2)/2
-    bw, bh = (x2-x1)*scale, (y2-y1)*scale
-    nx1, ny1 = int(max(0, cx-bw/2)), int(max(0, cy-bh/2))
-    nx2, ny2 = int(min(w-1, cx+bw/2)), int(min(h-1, cy+bh/2))
-    return nx1, ny1, nx2, ny2
-
-# ========================
-# 🔍 DỰ ĐOÁN ẢNH
-# ========================
-print(f"📸 Phân tích ảnh: {IMG_PATH}")
-img_bgr = cv2.imread(IMG_PATH)
-if img_bgr is None:
-    raise SystemExit(f"❌ Không tìm thấy ảnh: {IMG_PATH}")
-h, w, _ = img_bgr.shape
-
-results = yolo.predict(source=img_bgr, conf=CONF_DET, verbose=False)[0]
-persons, phones, cheating_boxes = [], [], []
-
-for b in results.boxes:
-    label = yolo.names[int(b.cls[0])].lower()
-    conf = float(b.conf[0])
-    x1, y1, x2, y2 = map(int, b.xyxy[0])
-    if label == "person": persons.append((conf, (x1, y1, x2, y2)))
-    if label in ["phone", "mobile", "smartphone"]: phones.append((conf, (x1, y1, x2, y2)))
-    if label == "cheating": cheating_boxes.append((conf, (x1, y1, x2, y2)))
+def run_blip_async(pil_img: Image.Image, question: str):
+    """Gọi BLIP-2 nền khi auto mô tả, không block FPS."""
+    def worker():
+        try:
+            txt = run_blip_sync(pil_img, question)
+            # Lưu log mô tả cho vui, nếu muốn có thể lưu ra file / DB ở đây
+            print(f"🧠 [BLIP-2 auto] {txt}")
+        except Exception as e:
+            print("⚠️ Lỗi BLIP-2 auto:", e)
+    threading.Thread(target=worker, daemon=True).start()
 
 # ========================
-# 🧠 PHÂN TÍCH GIAN LẬN
+# 💾 Lưu bằng chứng
 # ========================
-suspected_region = None
-prob_percent = 0
-caption = ""
-
-# TH1: YOLO đã có nhãn 'cheating'
-if cheating_boxes:
-    cheating_boxes.sort(key=lambda x: x[0], reverse=True)
-    conf, (x1, y1, x2, y2) = cheating_boxes[0]
-    suspected_region = (x1, y1, x2, y2)
-    prob_percent = int(conf * 100)
-    roi = img_bgr[y1:y2, x1:x2]
-    if roi.size > 0:
-        img_pil = Image.fromarray(cv2.cvtColor(roi, cv2.COLOR_BGR2RGB))
-        caption = run_blip(img_pil, "Describe the suspicious behavior in this image.")
-    else:
-        caption = "Suspicious activity detected."
-
-# TH2: Không có nhãn cheating → Kiểm tra person + phone gần nhau
-elif persons and phones:
-    persons.sort(key=lambda x: x[0], reverse=True)
-    phones.sort(key=lambda x: x[0], reverse=True)
-    p_conf, (px1, py1, px2, py2) = persons[0]
-    ph_conf, (hx1, hy1, hx2, hy2) = phones[0]
-    pcx, pcy = (px1+px2)//2, (py1+py2)//2
-    hcx, hcy = (hx1+hx2)//2, (hy1+hy2)//2
-    dist = math.hypot(pcx - hcx, pcy - hcy)
-
-    # Nếu khoảng cách nhỏ → nghi ngờ
-    if dist < max(w, h) * 0.2:
-        gx1, gy1 = min(px1, hx1), min(py1, hy1)
-        gx2, gy2 = max(px2, hx2), max(py2, hy2)
-        gx1, gy1, gx2, gy2 = expand_box(gx1, gy1, gx2, gy2, 1.1, w, h)
-        roi = img_bgr[gy1:gy2, gx1:gx2]
-        if roi.size > 0:
-            img_pil = Image.fromarray(cv2.cvtColor(roi, cv2.COLOR_BGR2RGB))
-            blip_ans = run_blip(img_pil, "Is the student cheating? Answer briefly.")
-            caption = blip_ans
-            if looks_suspicious(blip_ans):
-                suspected_region = (gx1, gy1, gx2, gy2)
-                prob_percent = int(((p_conf + ph_conf) / 2) * 100)
-            else:
-                prob_percent = 0
+def save_evidence(frame_bgr, caption: str | None):
+    ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+    path = os.path.join(EVIDENCE_DIR, f"cheating_{ts}.jpg")
+    cv2.imwrite(path, frame_bgr)
+    with open(LOG_FILE, "a", encoding="utf-8") as f:
+        f.write(
+            f"[{datetime.now():%Y-%m-%d %H:%M:%S}] ALERT -> "
+            f"{caption or 'cheating detected'} | IMG: {path}\n"
+        )
+    print(f"💾 Lưu bằng chứng: {path}")
 
 # ========================
-# 🎯 VẼ KHUNG NGHI NGỜ
+# 🧠 BIẾN TOÀN CỤC
 # ========================
-if suspected_region and prob_percent > 0:
-    x1, y1, x2, y2 = map(int, suspected_region)
-    label = f"Cheating: {prob_percent}%"
-    # Vẽ khung đỏ
-    cv2.rectangle(img_bgr, (x1, y1), (x2, y2), (0, 0, 255), 4)
-    (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.9, 2)
-    cv2.rectangle(img_bgr, (x1, max(0, y1 - th - 10)), (x1 + tw + 10, y1), (0, 0, 255), -1)
-    cv2.putText(img_bgr, label, (x1 + 5, y1 - 6),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255, 255, 255), 2)
-else:
-    caption = caption or "No cheating detected."
-
-print(f"🧠 Mô tả hành vi: {caption}")
-print(f"📊 Xác suất gian lận: {prob_percent}%")
+current_frame_bgr = None         # dùng cho chat BLIP-2
+last_fps = 0.0
+last_auto_blip_ts = 0.0
 
 # ========================
-# 💾 LƯU KẾT QUẢ
+# 🔍 PHÂN TÍCH MỘT FRAME
 # ========================
-timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-out_path = os.path.join(EVIDENCE_DIR, f"cheating_{timestamp}.jpg")
-cv2.imwrite(out_path, img_bgr)
-with open(LOG_FILE, "a", encoding="utf-8") as f:
-    f.write(f"[{datetime.now()}] {IMG_PATH} -> {prob_percent}% | {caption} | IMG: {out_path}\n")
+def analyze_frame(frame_bgr):
+    """Phát hiện person (GPU), cheat (CPU), vẽ khung + trả bool gian lận."""
+    global last_auto_blip_ts
 
-print(f"💾 Đã lưu ảnh: {out_path}")
-print(f"🗒️ Log ghi tại: {LOG_FILE}")
+    h, w, _ = frame_bgr.shape
+    rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
 
-cv2.imshow("🧠 Kết quả phát hiện gian lận", img_bgr)
-cv2.waitKey(0)
-cv2.destroyAllWindows()
+    # B1. YOLO-person trên GPU
+    with torch.inference_mode():
+        res_person = yolo_person.predict(
+            source=rgb,
+            imgsz=640,
+            conf=CONF_PERSON,
+            device=DEVICE_GPU,
+            half=(DEVICE_GPU == "cuda"),
+            verbose=False
+        )[0]
+
+    cheating_detected = False
+
+    if res_person is None or res_person.boxes is None or len(res_person.boxes) == 0:
+        return frame_bgr, cheating_detected
+
+    for box in res_person.boxes:
+        cls_id = int(box.cls[0])
+        label = yolo_person.names[cls_id]
+        if label != "person":
+            continue
+
+        x1, y1, x2, y2 = map(int, box.xyxy[0])
+        x1, y1 = max(0, x1), max(0, y1)
+        x2, y2 = min(w - 1, x2), min(h - 1, y2)
+        if x2 <= x1 or y2 <= y1:
+            continue
+
+        roi = rgb[y1:y2, x1:x2]
+        if roi.size == 0:
+            continue
+
+        # B2. YOLO-cheat trên CPU (2 lớp)
+        with torch.inference_mode():
+            res_cheat = yolo_cheat.predict(
+                source=roi,
+                imgsz=320,
+                conf=CONF_CHEAT,
+                device="cpu",
+                verbose=False
+            )[0]
+
+        tag = "non-cheating"
+        color = (0, 255, 0)
+
+        if res_cheat is not None and res_cheat.boxes is not None and len(res_cheat.boxes) > 0:
+            # Lấy box có conf cao nhất
+            res_cheat.boxes = res_cheat.boxes[res_cheat.boxes.conf.argsort(descending=True)]
+            cls2 = int(res_cheat.boxes[0].cls[0])
+            label2 = yolo_cheat.names[cls2].lower()
+
+            if label2 == "cheating":
+                tag = "cheating"
+                color = (0, 0, 255)
+                cheating_detected = True
+
+                now = time.time()
+                # Auto BLIP + lưu bằng chứng theo cooldown
+                if now - last_auto_blip_ts >= BLIP_AUTO_COOLDOWN:
+                    pil = Image.fromarray(roi)
+                    run_blip_async(pil, "Describe what the student is doing in this image.")
+                    save_evidence(frame_bgr, "cheating by YOLO + BLIP-2 auto")
+                    last_auto_blip_ts = now
+
+        # Vẽ khung quanh person
+        cv2.rectangle(frame_bgr, (x1, y1), (x2, y2), color, 2)
+        cv2.putText(
+            frame_bgr,
+            tag,
+            (x1, max(0, y1 - 6)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.7,
+            color,
+            2
+        )
+
+    return frame_bgr, cheating_detected
+
+# ========================
+# 🎥 CAMERA LOOP
+# ========================
+def camera_loop():
+    global current_frame_bgr, last_fps
+
+    cap = cv2.VideoCapture(CAM_URL)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+    cap.set(cv2.CAP_PROP_FPS, 15)  # giới hạn FPS input để GPU đỡ căng
+
+    if not cap.isOpened():
+        print("⚠️ Không thể kết nối camera.")
+        return
+
+    print("📷 Camera đã kết nối!")
+
+    frame_idx = 0
+    analyzed_frame = None
+    last_status_cheat = False
+
+    while True:
+        ok, frame = cap.read()
+        if not ok:
+            continue
+
+        current_frame_bgr = frame.copy()
+        frame_idx += 1
+
+        # Chỉ phân tích mỗi N frame để đỡ tốn tài nguyên
+        if frame_idx % ANALYZE_EVERY == 0:
+            t0 = time.time()
+            analyzed, is_cheat = analyze_frame(frame.copy())
+            dt = time.time() - t0
+            last_fps = 1.0 / dt if dt > 0 else 0.0
+            analyzed_frame = analyzed
+            last_status_cheat = is_cheat
+        else:
+            # Dùng lại frame đã phân tích gần nhất
+            if analyzed_frame is None:
+                analyzed_frame = frame.copy()
+                last_status_cheat = False
+
+        # Overlay trạng thái & FPS
+        overlay = analyzed_frame.copy()
+        status_text = "DETECTED: CHEATING" if last_status_cheat else "STATUS: SAFE"
+        color = (0, 0, 255) if last_status_cheat else (0, 255, 0)
+        cv2.putText(
+            overlay,
+            status_text,
+            (10, 35),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            1.0,
+            color,
+            3
+        )
+        cv2.putText(
+            overlay,
+            f"FPS: {last_fps:.1f}",
+            (10, 70),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.8,
+            (0, 255, 255),
+            2
+        )
+
+        cv2.imshow("📡 Exam Monitor (Dual YOLO + BLIP-2 Chat)", overlay)
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
+
+    cap.release()
+    cv2.destroyAllWindows()
+
+# ========================
+# 💬 GRADIO CHAT VỚI BLIP-2
+# ========================
+def chat_with_vlm(message, history):
+    global current_frame_bgr
+    if current_frame_bgr is None:
+        return {"role": "assistant", "content": "⚠️ Chưa có khung hình camera để phân tích."}
+
+    rgb = cv2.cvtColor(current_frame_bgr, cv2.COLOR_BGR2RGB)
+    pil = Image.fromarray(rgb)
+
+    # Chat này cho BLIP chạy đồng bộ (trên CPU), nhưng không ảnh hưởng GPU
+    try:
+        ans = run_blip_sync(pil, message)
+        return {"role": "assistant", "content": f"🧠 {ans}"}
+    except Exception as e:
+        return {"role": "assistant", "content": f"⚠️ BLIP-2 lỗi: {e}"}
+
+with gr.Blocks(theme="soft") as demo:
+    gr.Markdown("## 🤖 Exam Monitoring — Dual YOLO + BLIP-2 Chat (640p)")
+    gr.Markdown(
+        "- Cửa sổ OpenCV hiển thị camera realtime\n"
+        "- YOLOv8n (GPU) phát hiện người, YOLO custom (CPU) đánh giá cheating / non-cheating\n"
+        "- BLIP-2 tự mô tả khi phát hiện cheating (chạy nền, không tụt FPS)\n"
+        "- Bạn có thể hỏi thêm về khung hình hiện tại ở phần chat bên dưới"
+    )
+    gr.ChatInterface(
+        fn=chat_with_vlm,
+        title="BLIP-2 Q&A (khung hình hiện tại)",
+        textbox=gr.Textbox(placeholder="Ví dụ: 'Is anyone cheating?'", lines=1),
+        type="messages",
+    )
+
+# ========================
+# 🚀 MAIN
+# ========================
+if __name__ == "__main__":
+    threading.Thread(target=camera_loop, daemon=True).start()
+    demo.launch(share=False)
